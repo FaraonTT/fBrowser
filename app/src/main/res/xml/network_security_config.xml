@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A browser must be able to open plain-HTTP sites (LAN devices, legacy sites).
+  fBrowser upgrades http:// to https:// first and only falls back to http when the
+  secure connection cannot be established (see TabManager.prepare / FWebViewClient).
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

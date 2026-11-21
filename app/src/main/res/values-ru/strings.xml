@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">fBrowser</string>
+
+    <string name="search_hint">Поиск или адрес</string>
+    <string name="search_with">Искать в %1$s</string>
+    <string name="new_tab">Новая вкладка</string>
+    <string name="new_private_tab">Приватная вкладка</string>
+    <string name="private_unsupported">Для приватных вкладок нужна более новая версия WebView. Обновите «Android System WebView» или Chrome.</string>
+    <string name="tabs">Вкладки</string>
+    <string name="close_all">Закрыть все</string>
+    <string name="close">Закрыть</string>
+    <string name="back">Назад</string>
+    <string name="forward">Вперёд</string>
+    <string name="reload">Обновить</string>
+    <string name="stop">Остановить</string>
+    <string name="menu">Меню</string>
+    <string name="bookmarks">Закладки</string>
+    <string name="history">История</string>
+    <string name="settings">Настройки</string>
+    <string name="add_bookmark">Добавить в закладки</string>
+    <string name="remove_bookmark">Удалить из закладок</string>
+    <string name="share">Поделиться</string>
+    <string name="copy_link">Копировать ссылку</string>
+    <string name="link_copied">Ссылка скопирована</string>
+    <string name="find_in_page">Найти на странице</string>
+    <string name="find_hint">Найти</string>
+    <string name="desktop_site">Версия для ПК</string>
+    <string name="site_protection">Блокировка трекеров на этом сайте</string>
+    <string name="blocked_count">Заблокировано: %1$d</string>
+    <string name="clear_data">Очистить данные просмотра</string>
+    <string name="clear_data_title">Очистить данные просмотра?</string>
+    <string name="clear_data_message">Будут удалены cookie, данные сайтов, кэш и история. Закладки сохранятся.</string>
+    <string name="clear">Очистить</string>
+    <string name="cancel">Отмена</string>
+    <string name="empty_bookmarks">Закладок пока нет</string>
+    <string name="empty_history">История пуста</string>
+    <string name="start_title">Приватность по умолчанию</string>
+    <string name="start_body">Трекеры блокируются, соединения переводятся на HTTPS, и ничего не отправляется нам.</string>
+    <string name="start_private_title">Приватная вкладка</string>
+    <string name="start_private_body">Cookie, данные сайтов и история этой вкладки удаляются при её закрытии. Скриншоты отключены.</string>
+    <string name="private_badge">Приватная</string>
+
+    <string name="error_network_title">Не удаётся открыть страницу</string>
+    <string name="error_cert_title">Соединение не защищено</string>
+    <string name="error_cert_body">Сертификат сайта не удалось проверить, поэтому fBrowser остановил загрузку.</string>
+    <string name="error_crash_title">Страница постоянно падает</string>
+    <string name="error_crash_body">Страница несколько раз подряд обрушила процесс отрисовки. Обновите её вручную или откройте другую.</string>
+    <string name="retry">Повторить</string>
+
+    <string name="settings_search">Поисковая система</string>
+    <string name="settings_privacy">Приватность и безопасность</string>
+    <string name="settings_browsing">Просмотр</string>
+    <string name="settings_data">Данные</string>
+    <string name="settings_about">О приложении</string>
+    <string name="set_block_trackers">Блокировать трекеры и рекламу</string>
+    <string name="set_block_trackers_desc">Блокирует запросы к известным трекерам и рекламным доменам.</string>
+    <string name="set_block_cookies">Блокировать сторонние cookie</string>
+    <string name="set_block_cookies_desc">Мешает межсайтовой слежке через cookie.</string>
+    <string name="set_https_first">Сначала HTTPS</string>
+    <string name="set_https_first_desc">Пробует https:// перед http://. Откат на http — только если защищённое соединение установить не удалось.</string>
+    <string name="set_strip_params">Удалять параметры слежки</string>
+    <string name="set_strip_params_desc">Убирает utm_*, fbclid, gclid и похожие параметры из ссылок.</string>
+    <string name="set_signals">Отправлять сигналы приватности</string>
+    <string name="set_signals_desc">Добавляет заголовки Global Privacy Control (Sec-GPC) и Do Not Track к запросам страниц.</string>
+    <string name="set_safe_browsing">Безопасный просмотр</string>
+    <string name="set_safe_browsing_desc">Предупреждает о фишинговых и вредоносных сайтах средствами системного WebView.</string>
+    <string name="set_javascript">JavaScript</string>
+    <string name="set_javascript_desc">Отключение безопаснее всего, но ломает многие сайты.</string>
+    <string name="set_dark_web">Тёмный режим для страниц</string>
+    <string name="set_dark_web_desc">Затемняет веб-страницы, когда системная тема тёмная.</string>
+    <string name="set_hide_bars">Скрывать панель при прокрутке</string>
+    <string name="set_hide_bars_desc">Больше места для страницы во время чтения.</string>
+    <string name="set_clear_exit">Очищать данные при выходе</string>
+    <string name="set_clear_exit_desc">Удаляет cookie, данные сайтов и историю при закрытии fBrowser. Вкладки не восстанавливаются.</string>
+    <string name="about_text">fBrowser %1$s · работает на системном WebView (Chromium)</string>
+
+    <string name="download_started">Загрузка: %1$s</string>
+    <string name="download_failed">Не удалось скачать файл</string>
+    <string name="download_unsupported">Этот тип загрузки не поддерживается</string>
+</resources>
