@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="compat_title">Совместимость сайта</string>
+    <string name="compat_message">Выберите, как fBrowser представляется этому сайту. Если сайт не принимает fBrowser, включите Chrome или Firefox.</string>
+    <string name="compat_fbrowser">fBrowser (по умолчанию)</string>
+    <string name="compat_firefox">Firefox</string>
+    <string name="compat_chrome">Chrome (Android)</string>
+    <string name="compat_chrome_desktop">Chrome (версия для ПК)</string>
+    <string name="menu_compat">Совместимость: %1$s</string>
+    <string name="settings_compat">Совместимость</string>
+    <string name="settings_compat_desc">Идентификатор по умолчанию, который получают сайты (User-Agent). Другой выбор для одного сайта сохраняется из меню страницы.</string>
+    <string name="done">Готово</string>
+    <string name="about_gecko">fBrowser %1$s · движок Gecko (Firefox)</string>
+</resources>

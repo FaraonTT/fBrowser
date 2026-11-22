@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="compat_title">Site compatibility</string>
+    <string name="compat_message">Choose how fBrowser introduces itself to this site. If a site refuses fBrowser, switch to Chrome or Firefox.</string>
+    <string name="compat_fbrowser">fBrowser (default)</string>
+    <string name="compat_firefox">Firefox</string>
+    <string name="compat_chrome">Chrome (Android)</string>
+    <string name="compat_chrome_desktop">Chrome (desktop site)</string>
+    <string name="menu_compat">Compatibility: %1$s</string>
+    <string name="settings_compat">Compatibility</string>
+    <string name="settings_compat_desc">Default identity sent to websites (User-Agent). A different choice for one site is saved from the page menu.</string>
+    <string name="done">Done</string>
+    <string name="about_gecko">fBrowser %1$s · Gecko engine (Firefox)</string>
+</resources>

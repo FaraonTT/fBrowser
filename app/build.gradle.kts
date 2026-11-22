@@ -3,6 +3,10 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// Release signing comes from environment variables (set by the GitHub workflow).
+// Without them a release build is simply left unsigned.
+val releaseKeystore: String? = System.getenv("KEYSTORE_PATH")
+
 android {
     namespace = "dev.fbrowser.app"
 
@@ -20,8 +24,24 @@ android {
         targetSdk {
             version = release(36)
         }
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 2
+        versionName = (project.findProperty("versionName") as String?) ?: "0.2.0"
+
+        // GeckoView is shipped for 64-bit ARM only (almost every current phone).
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("release") {
+                storeFile = file(checkNotNull(releaseKeystore))
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("KEY_ALIAS")
+                keyPassword = System.getenv("KEY_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -35,6 +55,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            if (releaseKeystore != null) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 
@@ -66,8 +89,8 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.core.ktx)
 
-    // Engine: system WebView (Chromium) + AndroidX WebView APIs (Profile, features checks)
-    implementation(libs.androidx.webkit)
+    // Engine: Gecko, the Firefox engine
+    implementation(libs.geckoview)
 
     // Settings storage
     implementation(libs.androidx.datastore.preferences)

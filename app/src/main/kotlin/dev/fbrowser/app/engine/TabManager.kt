@@ -1,61 +1,49 @@
 package dev.fbrowser.app.engine
 
-import android.annotation.SuppressLint
-import android.app.Activity
-import android.app.Application
 import android.app.DownloadManager
 import android.content.Context
 import android.content.Intent
-import android.content.MutableContextWrapper
 import android.net.Uri
-import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.view.View
-import android.view.ViewGroup
-import android.webkit.CookieManager
 import android.webkit.URLUtil
-import android.webkit.ValueCallback
-import android.webkit.WebChromeClient
-import android.webkit.WebSettings
-import android.webkit.WebStorage
-import android.webkit.WebView
 import android.widget.Toast
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.webkit.ProfileStore
-import androidx.webkit.WebSettingsCompat
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
+import dev.fbrowser.app.FBrowserApp
 import dev.fbrowser.app.R
 import dev.fbrowser.app.data.BrowserSettings
 import dev.fbrowser.app.data.JsonFiles
 import dev.fbrowser.app.data.Library
 import org.json.JSONArray
 import org.json.JSONObject
+import org.mozilla.geckoview.ContentBlocking
+import org.mozilla.geckoview.GeckoRuntime
+import org.mozilla.geckoview.GeckoRuntimeSettings
+import org.mozilla.geckoview.GeckoSession
+import org.mozilla.geckoview.GeckoSessionSettings
+import org.mozilla.geckoview.StorageController
+import org.mozilla.geckoview.WebRequestError
+import org.mozilla.geckoview.WebResponse
 import java.io.File
 
-const val PRIVATE_PROFILE = "fbrowser_private"
-
 /**
- * Owns all tabs and their WebViews.
+ * Owns all tabs and their Gecko sessions.
  *
- * Stability: WebViews are created lazily, at most [MAX_LIVE] stay alive (the rest are hibernated
- * into a saved-state Bundle), renderer crashes are recovered, and the session is persisted.
- * Privacy: private tabs live in a separate WebView Profile that is deleted when the last private
- * tab closes (and purged before the first private tab of every process).
+ * Stability: sessions are created lazily, at most [MAX_LIVE] stay open (the rest are hibernated
+ * and later restored from their SessionState), content-process crashes are recovered, and the
+ * session is persisted. Privacy: Gecko Enhanced Tracking Protection, state partitioning of
+ * third-party cookies, HTTPS-first, tracking-parameter stripping, private-mode sessions.
  */
 class TabManager(
-    private val app: Application,
+    private val app: FBrowserApp,
     private val settingsProvider: () -> BrowserSettings,
     private val library: Library,
-    private val blockList: BlockList,
 ) {
     val tabs = mutableStateListOf<Tab>()
 
@@ -64,67 +52,95 @@ class TabManager(
     val active: Tab? get() = tabs.firstOrNull { it.id == activeId }
 
     var barsVisible by mutableStateOf(true)
-    var fullscreenView by mutableStateOf<View?>(null)
+    var fullscreen by mutableStateOf(false)
         private set
-    var findOpen by mutableStateOf(false)
-        private set
-    var findActive by mutableIntStateOf(0)
-        private set
-    var findTotal by mutableIntStateOf(0)
-        private set
-
-    val privateSupported: Boolean by lazy { WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE) }
 
     private var nextId = 1L
-    private var host: Activity? = null
-    private var fileChooser: ((ValueCallback<Array<Uri>>, WebChromeClient.FileChooserParams) -> Boolean)? = null
-    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
-    private var privatePurged = false
     private val mainHandler = Handler(Looper.getMainLooper())
+    private var filePicker: ((Boolean, (List<Uri>) -> Unit) -> Unit)? = null
     private val sessionFile get() = File(app.filesDir, "session.json")
 
-    // ---- user agents: drop the "; wv" WebView marker so sites do not serve degraded pages ----
-    private val defaultUa: String by lazy { WebSettings.getDefaultUserAgent(app) }
-    private val mobileUa: String by lazy { defaultUa.replace("; wv", "").replace("Version/4.0 ", "") }
-    private val desktopUa: String by lazy {
-        val major = Regex("Chrome/(\\d+)").find(defaultUa)?.groupValues?.get(1) ?: "140"
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$major.0.0.0 Safari/537.36"
+    private val appVersion: String by lazy {
+        try {
+            app.packageManager.getPackageInfo(app.packageName, 0).versionName ?: "0"
+        } catch (_: Exception) {
+            "0"
+        }
     }
 
     internal fun settings(): BrowserSettings = settingsProvider()
 
     // ------------------------------------------------------------------ host activity
 
-    fun attach(
-        activity: Activity,
-        chooser: (ValueCallback<Array<Uri>>, WebChromeClient.FileChooserParams) -> Boolean,
-    ) {
-        host = activity
-        fileChooser = chooser
-        tabs.forEach { it.contextWrapper?.setBaseContext(activity) }
+    fun attach(picker: (multiple: Boolean, onResult: (List<Uri>) -> Unit) -> Unit) {
+        filePicker = picker
     }
 
-    /** Replace the Activity with the application context so no WebView leaks the Activity. */
-    fun detach(activity: Activity) {
-        if (host !== activity) return
-        host = null
-        fileChooser = null
-        tabs.forEach { it.contextWrapper?.setBaseContext(app) }
+    fun detach() {
+        filePicker = null
     }
 
-    fun onHostPause() { active?.webView?.onPause() }
-    fun onHostResume() { active?.webView?.onResume() }
+    // ------------------------------------------------------------------ engine runtime
+
+    /** Starts Gecko (if needed) and applies the global privacy settings. */
+    fun warmUp() {
+        ensureRuntime()
+    }
+
+    private fun ensureRuntime(): GeckoRuntime {
+        val first = !app.runtimeReady
+        val runtime = app.runtime
+        if (first) applyRuntimeSettings(runtime)
+        return runtime
+    }
+
+    private fun applyRuntimeSettings(runtime: GeckoRuntime) {
+        val s = settingsProvider()
+        val blocking = runtime.settings.contentBlocking
+        val categories = if (s.blockTrackers) {
+            ContentBlocking.AntiTracking.AD or
+                ContentBlocking.AntiTracking.ANALYTIC or
+                ContentBlocking.AntiTracking.SOCIAL or
+                ContentBlocking.AntiTracking.CRYPTOMINING or
+                ContentBlocking.AntiTracking.FINGERPRINTING
+        } else {
+            ContentBlocking.AntiTracking.NONE
+        }
+        blocking.setAntiTracking(categories)
+        // Third-party cookies are partitioned per site (Total Cookie Protection) instead of shared.
+        val cookies = if (s.blockThirdPartyCookies) {
+            ContentBlocking.CookieBehavior.ACCEPT_FIRST_PARTY_AND_ISOLATE_OTHERS
+        } else {
+            ContentBlocking.CookieBehavior.ACCEPT_ALL
+        }
+        blocking.setCookieBehavior(cookies)
+        blocking.setCookieBehaviorPrivateMode(cookies)
+        blocking.setEnhancedTrackingProtectionLevel(
+            if (s.blockTrackers) ContentBlocking.EtpLevel.STRICT else ContentBlocking.EtpLevel.NONE,
+        )
+        runtime.settings.setPreferredColorScheme(
+            if (s.darkWebPages) GeckoRuntimeSettings.COLOR_SCHEME_SYSTEM else GeckoRuntimeSettings.COLOR_SCHEME_LIGHT,
+        )
+    }
+
+    fun applySettingsToAll() {
+        if (!app.runtimeReady) return
+        applyRuntimeSettings(app.runtime)
+        val s = settingsProvider()
+        tabs.forEach { tab ->
+            tab.session?.settings?.let {
+                it.setAllowJavascript(s.javascript)
+                it.setUseTrackingProtection(trackingFor(tab.url, s))
+            }
+        }
+    }
+
+    private fun trackingFor(url: String, s: BrowserSettings): Boolean =
+        s.blockTrackers && UrlUtils.siteKey(UrlUtils.hostOf(url)) !in s.allowlist
 
     // ------------------------------------------------------------------ tabs
 
     fun newTab(url: String = "", private: Boolean = false, select: Boolean = true): Tab? {
-        if (private) {
-            if (!privateSupported) return null
-            if (!privatePurged && tabs.none { it.isPrivate }) {
-                privatePurged = true
-                deletePrivateProfile() // drop leftovers of a previous process that was killed
-            }
-        }
         val tab = Tab(nextId++, private, url)
         tabs.add(tab)
         if (select) select(tab.id)
@@ -133,12 +149,9 @@ class TabManager(
 
     fun select(id: Long) {
         val tab = tabs.firstOrNull { it.id == id } ?: return
-        if (id != activeId) active?.webView?.onPause()
         activeId = id
         tab.lastActive = SystemClock.uptimeMillis()
-        tab.webView?.onResume()
         barsVisible = true
-        closeFind()
         evictIfNeeded()
     }
 
@@ -147,21 +160,19 @@ class TabManager(
         if (index < 0) return
         val tab = tabs[index]
         val wasActive = tab.id == activeId
-        destroyWebView(tab)
+        closeSession(tab)
         tabs.removeAt(index)
         if (tabs.isEmpty()) {
             newTab()
         } else if (wasActive) {
             select(tabs[index.coerceAtMost(tabs.lastIndex)].id)
         }
-        if (privateSupported && tabs.none { it.isPrivate }) deletePrivateProfile()
     }
 
     fun closeAll() {
-        tabs.toList().forEach { destroyWebView(it) }
+        tabs.toList().forEach { closeSession(it) }
         tabs.clear()
         activeId = -1L
-        if (privateSupported) deletePrivateProfile()
         newTab()
     }
 
@@ -170,6 +181,13 @@ class TabManager(
         val current = active
         val tab = if (current != null && current.isStartPage && !current.isPrivate) current else newTab() ?: return
         load(tab, raw)
+    }
+
+    internal fun openInNewTab(uri: String) {
+        mainHandler.post {
+            val parentPrivate = active?.isPrivate == true
+            newTab(private = parentPrivate)?.let { load(it, uri) }
+        }
     }
 
     // ------------------------------------------------------------------ navigation
@@ -187,253 +205,287 @@ class TabManager(
         tab.host = UrlUtils.hostOf(prepared)
         tab.progress = 0
         tab.loading = true
-        val wv = tab.webView ?: createWebView(tab, initialLoad = false)
+        val session = tab.session ?: createSession(tab, initialLoad = false)
         tab.savedState = null
-        wv.loadUrl(prepared, privacyHeaders(s))
-        if (tab.id == activeId) wv.onResume()
+        applySiteSettings(tab, prepared, s)
+        session.load(loaderFor(prepared, s))
+    }
+
+    private fun loaderFor(url: String, s: BrowserSettings): GeckoSession.Loader {
+        val loader = GeckoSession.Loader().uri(url)
+        if (s.sendPrivacySignals) {
+            loader.additionalHeaders(mapOf("Sec-GPC" to "1", "DNT" to "1"))
+                .headerFilter(GeckoSession.HEADER_FILTER_UNRESTRICTED_UNSAFE)
+        }
+        return loader
     }
 
     /**
-     * Applies URL hygiene shared by typed and link navigations: tracking-parameter removal and
-     * HTTPS-first upgrade. Records the upgrade so the client can fall back to http only when the
-     * secure connection cannot be established.
+     * URL hygiene shared by typed and link navigations: tracking-parameter removal and the
+     * HTTPS-first upgrade. The upgrade is remembered so a failed secure connection (but never a
+     * certificate error) can fall back to http.
      */
     internal fun prepare(tab: Tab, url: String, s: BrowserSettings): String {
         var out = url
         if (s.stripTrackingParams) out = UrlUtils.stripTracking(out)
-        val previous = tab.pendingUpgrade
-        tab.pendingUpgrade = null
-        if (s.httpsFirst && out.startsWith("http://") && !UrlUtils.isLocalHost(out)) {
-            val host = UrlUtils.hostOf(out)
-            if (previous?.first == out) {
-                // The site redirected us from https back to the same http URL: stop upgrading it.
-                tab.httpHosts.add(host)
-            } else if (host !in tab.httpHosts) {
-                val upgraded = "https://" + out.removePrefix("http://")
-                tab.pendingUpgrade = out to upgraded
-                out = upgraded
+        val pending = tab.pendingUpgrade
+        if (out.startsWith("http://")) {
+            if (s.httpsFirst && !UrlUtils.isLocalHost(out)) {
+                val host = UrlUtils.hostOf(out)
+                if (pending?.first == out) {
+                    // The site sent us from https back to the same http URL: stop upgrading it.
+                    tab.httpHosts.add(host)
+                    tab.pendingUpgrade = null
+                } else if (host !in tab.httpHosts) {
+                    val upgraded = "https://" + out.removePrefix("http://")
+                    tab.pendingUpgrade = out to upgraded
+                    out = upgraded
+                }
             }
+        } else if (pending != null && pending.second != out) {
+            tab.pendingUpgrade = null
         }
         return out
     }
 
-    internal fun privacyHeaders(s: BrowserSettings): Map<String, String> =
-        if (s.sendPrivacySignals) mapOf("Sec-GPC" to "1", "DNT" to "1") else emptyMap()
+    /** Per-site settings that must be in place before the request is sent. */
+    private fun applySiteSettings(tab: Tab, url: String, s: BrowserSettings) {
+        val session = tab.session ?: return
+        val mode = s.uaFor(UrlUtils.siteKey(UrlUtils.hostOf(url)))
+        if (mode != tab.uaMode) {
+            tab.uaMode = mode
+            applyUa(session, mode)
+        }
+        session.settings.setUseTrackingProtection(trackingFor(url, s))
+    }
+
+    private fun applyUa(session: GeckoSession, mode: UaMode) {
+        session.settings.setUserAgentOverride(UserAgents.forMode(mode, appVersion))
+        session.settings.setUserAgentMode(
+            if (mode.isDesktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE,
+        )
+        session.settings.setViewportMode(
+            if (mode.isDesktop) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE,
+        )
+    }
+
+    /** Compatibility switch from the page menu: changes the identity and reloads. */
+    fun setUaMode(tab: Tab, mode: UaMode) {
+        tab.uaMode = mode
+        tab.session?.let {
+            applyUa(it, mode)
+            it.reload()
+        }
+    }
+
+    /** Called for every top-level load request. Returns true to let Gecko continue the load. */
+    internal fun handleLoadRequest(tab: Tab, uri: String, hasUserGesture: Boolean): Boolean {
+        val scheme = uri.substringBefore(':', "").lowercase()
+        when (scheme) {
+            "http", "https" -> {
+                val s = settingsProvider()
+                val prepared = prepare(tab, uri, s)
+                if (prepared != uri) {
+                    mainHandler.post { tab.session?.load(loaderFor(prepared, s)) }
+                    return false
+                }
+                tab.host = UrlUtils.hostOf(uri)
+                applySiteSettings(tab, uri, s)
+                return true
+            }
+            "about" -> return uri == "about:blank"
+            "blob" -> return true
+            "mailto", "tel", "sms" -> {
+                // Only after a real tap, never from a script redirect.
+                if (hasUserGesture) openExternal(Uri.parse(uri))
+                return false
+            }
+        }
+        // intent:, market:, file:, data:, javascript:, custom schemes: blocked.
+        return false
+    }
+
+    internal fun handleLoadError(tab: Tab, uri: String?, category: Int, code: Int) {
+        val failing = uri.orEmpty()
+        val upgrade = tab.pendingUpgrade
+        // HTTPS-first fallback only for "cannot connect" failures, never for certificate errors.
+        if (upgrade != null && failing == upgrade.second &&
+            (code == WebRequestError.ERROR_CONNECTION_REFUSED || code == WebRequestError.ERROR_NET_TIMEOUT)
+        ) {
+            tab.pendingUpgrade = null
+            tab.httpHosts.add(UrlUtils.hostOf(upgrade.first))
+            mainHandler.post { tab.session?.loadUri(upgrade.first) }
+            return
+        }
+        tab.loading = false
+        val kind = if (category == WebRequestError.ERROR_CATEGORY_SECURITY) ErrorKind.Certificate else ErrorKind.Network
+        tab.error = TabError(kind, failing, "#$code")
+    }
 
     fun goBack(): Boolean {
-        val wv = active?.webView ?: return false
-        if (!wv.canGoBack()) return false
-        wv.goBack()
+        val tab = active ?: return false
+        if (!tab.canGoBack) return false
+        tab.session?.goBack()
         return true
     }
 
-    fun goForward() { active?.webView?.takeIf { it.canGoForward() }?.goForward() }
+    fun goForward() {
+        val tab = active ?: return
+        if (tab.canGoForward) tab.session?.goForward()
+    }
 
     fun reload() {
         val tab = active ?: return
         val err = tab.error
         when {
             err != null -> load(tab, err.url)
-            tab.webView == null -> if (tab.url.isNotEmpty()) webViewFor(tab)
-            else -> tab.webView?.reload()
+            tab.session == null -> if (tab.url.isNotEmpty()) sessionFor(tab)
+            else -> tab.session?.reload()
         }
     }
 
-    fun stop() { active?.webView?.stopLoading() }
-
-    fun setDesktop(tab: Tab, enabled: Boolean) {
-        tab.desktopSite = enabled
-        tab.webView?.let {
-            it.settings.userAgentString = if (enabled) desktopUa else mobileUa
-            it.reload()
-        }
+    fun stop() {
+        active?.session?.stop()
     }
 
-    // ------------------------------------------------------------------ WebView lifecycle
+    // ------------------------------------------------------------------ session lifecycle
 
-    /** Returns the tab's WebView, creating (and restoring) it on first use. */
-    fun webViewFor(tab: Tab): WebView =
-        tab.webView ?: createWebView(tab, initialLoad = true).also { if (tab.id == activeId) it.onResume() }
+    /** Returns the tab's open session, creating (and restoring) it on first use. */
+    fun sessionFor(tab: Tab): GeckoSession = tab.session ?: createSession(tab, initialLoad = true)
 
-    @SuppressLint("ClickableViewAccessibility")
-    private fun createWebView(tab: Tab, initialLoad: Boolean): WebView {
+    private fun createSession(tab: Tab, initialLoad: Boolean): GeckoSession {
+        val runtime = ensureRuntime()
         val s = settingsProvider()
-        val wrapper = MutableContextWrapper(host ?: app)
-        val wv = WebView(wrapper)
-        // The profile must be chosen before the WebView is used for anything else.
-        if (tab.isPrivate && privateSupported) {
-            ProfileStore.getInstance().getOrCreateProfile(PRIVATE_PROFILE)
-            WebViewCompat.setProfile(wv, PRIVATE_PROFILE)
-        }
-        tab.webView = wv
-        tab.contextWrapper = wrapper
-        applySettings(wv, tab, s)
-        wv.webViewClient = FWebViewClient(tab, this)
-        wv.webChromeClient = FChromeClient(tab, this)
-        wv.setDownloadListener { url, userAgent, contentDisposition, mime, _ ->
-            download(tab, url, userAgent, contentDisposition, mime)
-        }
-        wv.setFindListener { ordinal, total, _ ->
-            if (tab.id == activeId) {
-                findActive = if (total == 0) 0 else ordinal + 1
-                findTotal = total
-            }
-        }
-        installScrollHandler(wv, tab)
+        val mode = s.uaFor(UrlUtils.siteKey(UrlUtils.hostOf(tab.url)))
+        tab.uaMode = mode
+
+        val session = GeckoSession(
+            GeckoSessionSettings.Builder()
+                .usePrivateMode(tab.isPrivate)
+                .useTrackingProtection(trackingFor(tab.url, s))
+                .userAgentOverride(UserAgents.forMode(mode, appVersion))
+                .userAgentMode(
+                    if (mode.isDesktop) GeckoSessionSettings.USER_AGENT_MODE_DESKTOP else GeckoSessionSettings.USER_AGENT_MODE_MOBILE,
+                )
+                .viewportMode(
+                    if (mode.isDesktop) GeckoSessionSettings.VIEWPORT_MODE_DESKTOP else GeckoSessionSettings.VIEWPORT_MODE_MOBILE,
+                )
+                .allowJavascript(s.javascript)
+                .suspendMediaWhenInactive(true)
+                .build(),
+        )
+        val controller = TabController(tab, this)
+        session.setNavigationDelegate(FNavigationDelegate(controller))
+        session.setProgressDelegate(controller)
+        session.setContentDelegate(controller)
+        session.setContentBlockingDelegate(controller)
+        session.setScrollDelegate(controller)
+        // Camera, microphone, location and notifications have no PermissionDelegate: denied.
+        session.setPromptDelegate(FilePromptHandler(this, app))
+        session.open(runtime)
+        tab.session = session
 
         if (initialLoad && !tab.skipInitialLoad) {
             val saved = tab.savedState
             tab.savedState = null
-            val restored = saved?.let { wv.restoreState(it) }
-            if (restored == null && tab.url.isNotEmpty()) wv.loadUrl(tab.url, privacyHeaders(s))
-        }
-        return wv
-    }
-
-    @Suppress("DEPRECATION")
-    @SuppressLint("SetJavaScriptEnabled")
-    private fun applySettings(wv: WebView, tab: Tab, s: BrowserSettings) {
-        wv.settings.apply {
-            javaScriptEnabled = s.javascript
-            domStorageEnabled = true
-            // Hardening: no local file or content:// access from web content.
-            allowFileAccess = false
-            allowContentAccess = false
-            allowFileAccessFromFileURLs = false
-            allowUniversalAccessFromFileURLs = false
-            mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
-            safeBrowsingEnabled = s.safeBrowsing
-            setGeolocationEnabled(false)
-            mediaPlaybackRequiresUserGesture = true
-            javaScriptCanOpenWindowsAutomatically = false
-            setSupportMultipleWindows(false)
-            setSupportZoom(true)
-            builtInZoomControls = true
-            displayZoomControls = false
-            useWideViewPort = true
-            loadWithOverviewMode = true
-            userAgentString = if (tab.desktopSite) desktopUa else mobileUa
-        }
-        cookieManagerFor(tab).apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(wv, !s.blockThirdPartyCookies)
-        }
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
-            WebSettingsCompat.setAlgorithmicDarkeningAllowed(wv.settings, s.darkWebPages)
-        }
-    }
-
-    fun applySettingsToAll() {
-        val s = settingsProvider()
-        tabs.forEach { tab -> tab.webView?.let { applySettings(it, tab, s) } }
-    }
-
-    private fun cookieManagerFor(tab: Tab): CookieManager =
-        if (tab.isPrivate && privateSupported) {
-            ProfileStore.getInstance().getOrCreateProfile(PRIVATE_PROFILE).cookieManager
-        } else {
-            CookieManager.getInstance()
-        }
-
-    /** Hide the toolbar while reading (scroll down) and bring it back on scroll up. */
-    private fun installScrollHandler(wv: WebView, tab: Tab) {
-        var accumulated = 0
-        var lastToggle = 0L
-        wv.setOnScrollChangeListener { _, _, scrollY, _, oldScrollY ->
-            if (tab.id != activeId || !settingsProvider().hideBarsOnScroll) return@setOnScrollChangeListener
-            if (scrollY <= 0) {
-                barsVisible = true
-                accumulated = 0
-                return@setOnScrollChangeListener
-            }
-            val dy = scrollY - oldScrollY
-            if (dy * accumulated < 0) accumulated = 0
-            accumulated += dy
-            val now = SystemClock.uptimeMillis()
-            if (now - lastToggle < 350) return@setOnScrollChangeListener // avoid relayout feedback loops
-            if (accumulated > 140 && barsVisible) {
-                barsVisible = false
-                lastToggle = now
-                accumulated = 0
-            } else if (accumulated < -60 && !barsVisible) {
-                barsVisible = true
-                lastToggle = now
-                accumulated = 0
+            if (saved != null) {
+                session.restoreState(saved)
+            } else if (tab.url.isNotEmpty()) {
+                session.load(loaderFor(tab.url, s))
             }
         }
+        return session
     }
 
-    /** Keeps at most [MAX_LIVE] WebViews alive; the least recently used are hibernated. */
+    private fun closeSession(tab: Tab) {
+        val session = tab.session ?: return
+        tab.session = null
+        session.close()
+    }
+
+    /** Keeps at most [MAX_LIVE] sessions open; the least recently used ones are hibernated. */
     private fun evictIfNeeded() {
-        var excess = tabs.count { it.webView != null } - MAX_LIVE
+        var excess = tabs.count { it.session != null } - MAX_LIVE
         if (excess <= 0) return
-        tabs.filter { it.webView != null && it.id != activeId }
-            .sortedBy { it.lastActive }
-            .forEach {
-                if (excess <= 0) return
-                hibernate(it)
-                excess--
-            }
+        for (tab in tabs.filter { it.session != null && it.id != activeId }.sortedBy { it.lastActive }) {
+            if (excess <= 0) return
+            hibernate(tab)
+            excess--
+        }
     }
 
+    /** Frees the engine session; the SessionState kept by the controller restores it later. */
     fun hibernate(tab: Tab) {
-        val wv = tab.webView ?: return
-        val state = Bundle()
-        wv.saveState(state)
-        tab.savedState = state
-        destroyWebView(tab)
+        closeSession(tab)
+        tab.sessionVersion++
     }
 
-    /** Called from onTrimMemory: free every background WebView, they are restored on demand. */
+    /** Called from onTrimMemory: free every background session, they are restored on demand. */
     fun trimMemory() {
-        tabs.filter { it.webView != null && it.id != activeId }.forEach { hibernate(it) }
+        tabs.filter { it.session != null && it.id != activeId }.forEach { hibernate(it) }
     }
 
-    private fun destroyWebView(tab: Tab) {
-        val wv = tab.webView ?: return
-        tab.webView = null
-        tab.contextWrapper = null
-        (wv.parent as? ViewGroup)?.removeView(wv)
-        wv.stopLoading()
-        wv.webViewClient = android.webkit.WebViewClient()
-        wv.webChromeClient = null
-        wv.setDownloadListener(null)
-        wv.destroy()
-        tab.webViewVersion++
-    }
-
-    /** The renderer process died (crash or OOM kill). Recover instead of taking the app down. */
-    internal fun onRenderGone(tab: Tab) {
-        val now = SystemClock.uptimeMillis()
-        tab.crashTimes.addLast(now)
-        while (tab.crashTimes.isNotEmpty() && now - tab.crashTimes.first() > 30_000) tab.crashTimes.removeFirst()
-        tab.savedState = null
+    /** The content process died. Recover instead of leaving a dead tab. */
+    internal fun onContentGone(tab: Tab, crashed: Boolean) {
+        tab.session = null // Gecko has already closed it
         tab.progress = 0
         tab.loading = false
-        if (tab.crashTimes.size >= 3) {
-            // Crash loop: stop reloading automatically and let the user decide.
-            tab.skipInitialLoad = true
-            tab.error = TabError(ErrorKind.Crash, tab.url, "")
+        if (crashed) {
+            val now = SystemClock.uptimeMillis()
+            tab.crashTimes.addLast(now)
+            while (tab.crashTimes.isNotEmpty() && now - tab.crashTimes.first() > 30_000) tab.crashTimes.removeFirst()
+            if (tab.crashTimes.size >= 3) {
+                // Crash loop: stop reloading automatically and let the user decide.
+                tab.skipInitialLoad = true
+                tab.error = TabError(ErrorKind.Crash, tab.url, "")
+            }
         }
-        destroyWebView(tab) // UI re-attaches a fresh WebView through webViewVersion
+        tab.sessionVersion++ // the UI creates a fresh session and restores the saved state
     }
 
-    // ------------------------------------------------------------------ privacy helpers
+    // ------------------------------------------------------------------ callbacks from the controller
 
-    internal fun isBlockingActive(pageHost: String): Boolean {
-        val s = settingsProvider()
-        return s.blockTrackers && UrlUtils.siteKey(pageHost) !in s.allowlist
+    internal fun recordVisit(tab: Tab) {
+        if (!tab.isPrivate && tab.error == null) library.addVisit(tab.url, tab.title)
     }
 
-    internal fun shouldBlock(host: String): Boolean = blockList.isBlocked(host)
-
-    internal fun recordVisit(tab: Tab, url: String, title: String) {
-        if (!tab.isPrivate && tab.error == null) library.addVisit(url, title)
+    internal fun onScroll(tab: Tab, scrollY: Int, delta: Int) {
+        if (tab.id != activeId || !settingsProvider().hideBarsOnScroll) return
+        if (scrollY <= 0) {
+            barsVisible = true
+            scrollAccumulated = 0
+            return
+        }
+        if (delta * scrollAccumulated < 0) scrollAccumulated = 0
+        scrollAccumulated += delta
+        val now = SystemClock.uptimeMillis()
+        if (now - lastBarToggle < 350) return // avoid relayout feedback loops
+        if (scrollAccumulated > 140 && barsVisible) {
+            barsVisible = false
+            lastBarToggle = now
+            scrollAccumulated = 0
+        } else if (scrollAccumulated < -60 && !barsVisible) {
+            barsVisible = true
+            lastBarToggle = now
+            scrollAccumulated = 0
+        }
     }
 
-    internal fun syncNavigation(tab: Tab, view: WebView) {
-        tab.canGoBack = view.canGoBack()
-        tab.canGoForward = view.canGoForward()
+    private var scrollAccumulated = 0
+    private var lastBarToggle = 0L
+
+    internal fun onFullScreen(on: Boolean) {
+        fullscreen = on
+    }
+
+    fun exitFullscreen() {
+        active?.session?.exitFullScreen()
+        fullscreen = false
+    }
+
+    internal fun pickFiles(multiple: Boolean, onResult: (List<Uri>) -> Unit) {
+        val picker = filePicker
+        if (picker == null) onResult(emptyList()) else picker(multiple, onResult)
     }
 
     internal fun openExternal(uri: Uri) {
@@ -444,98 +496,21 @@ class TabManager(
         }
     }
 
-    private fun deletePrivateProfile(retry: Boolean = true) {
-        try {
-            ProfileStore.getInstance().deleteProfile(PRIVATE_PROFILE)
-        } catch (_: IllegalStateException) {
-            // profile still in use by a WebView that is being torn down: try once more shortly
-            if (retry) mainHandler.postDelayed({
-                if (tabs.none { it.isPrivate }) deletePrivateProfile(retry = false)
-            }, 1_500)
-        } catch (_: Exception) {
-            // feature missing or already gone
-        }
-    }
-
-    /** Wipes cookies, site storage and caches of regular browsing. Private tabs are untouched. */
-    fun clearWebData() {
-        CookieManager.getInstance().apply {
-            removeAllCookies(null)
-            flush()
-        }
-        WebStorage.getInstance().deleteAllData()
-        tabs.filter { !it.isPrivate }.forEach {
-            it.webView?.clearCache(true)
-            it.webView?.clearHistory()
-        }
-    }
-
-    // ------------------------------------------------------------------ find in page
-
-    fun openFind() { findOpen = true; findActive = 0; findTotal = 0 }
-
-    fun find(query: String) {
-        val wv = active?.webView ?: return
-        if (query.isEmpty()) {
-            wv.clearMatches()
-            findActive = 0
-            findTotal = 0
-        } else {
-            wv.findAllAsync(query)
-        }
-    }
-
-    fun findNext(forward: Boolean) { active?.webView?.findNext(forward) }
-
-    fun closeFind() {
-        if (!findOpen) return
-        findOpen = false
-        active?.webView?.clearMatches()
-    }
-
-    // ------------------------------------------------------------------ fullscreen video, files, downloads
-
-    internal fun showCustomView(view: View, callback: WebChromeClient.CustomViewCallback) {
-        if (fullscreenView != null) {
-            callback.onCustomViewHidden()
-            return
-        }
-        fullscreenView = view
-        customViewCallback = callback
-    }
-
-    fun hideCustomView() {
-        if (fullscreenView == null) return
-        fullscreenView = null
-        customViewCallback?.onCustomViewHidden()
-        customViewCallback = null
-    }
-
-    internal fun openFileChooser(
-        callback: ValueCallback<Array<Uri>>,
-        params: WebChromeClient.FileChooserParams,
-    ): Boolean {
-        val launcher = fileChooser
-        if (launcher == null) {
-            callback.onReceiveValue(null)
-            return false
-        }
-        return launcher(callback, params)
-    }
-
-    private fun download(tab: Tab, url: String, userAgent: String?, contentDisposition: String?, mime: String?) {
+    internal fun download(response: WebResponse) {
+        val url = response.uri
         if (!url.startsWith("http://") && !url.startsWith("https://")) {
             toast(app.getString(R.string.download_unsupported))
             return
         }
         try {
-            val name = URLUtil.guessFileName(url, contentDisposition, mime).replace('/', '_')
+            val headers = response.headers
+            val mime = headers.entries.firstOrNull { it.key.equals("content-type", true) }?.value?.substringBefore(';')
+            val disposition = headers.entries.firstOrNull { it.key.equals("content-disposition", true) }?.value
+            val name = URLUtil.guessFileName(url, disposition, mime).replace('/', '_')
             val request = DownloadManager.Request(Uri.parse(url))
-                .setMimeType(mime)
-                .addRequestHeader("User-Agent", userAgent ?: mobileUa)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
-            cookieManagerFor(tab).getCookie(url)?.let { request.addRequestHeader("Cookie", it) }
+            if (mime != null) request.setMimeType(mime)
             (app.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager).enqueue(request)
             toast(app.getString(R.string.download_started, name))
         } catch (_: Exception) {
@@ -545,7 +520,14 @@ class TabManager(
 
     fun toast(text: String) = Toast.makeText(app, text, Toast.LENGTH_SHORT).show()
 
-    // ------------------------------------------------------------------ session
+    // ------------------------------------------------------------------ data
+
+    /** Wipes cookies, site storage and caches. */
+    fun clearWebData() {
+        ensureRuntime().storageController.clearData(StorageController.ClearFlags.ALL)
+    }
+
+    // ------------------------------------------------------------------ session persistence
 
     /** Persists regular (non-private) tabs. With "clear on exit" the session is deleted instead. */
     fun saveSession() {
@@ -563,7 +545,7 @@ class TabManager(
         JsonFiles.write(sessionFile, JSONObject().put("tabs", arr).put("active", activeIndex).toString())
     }
 
-    /** Recreates tabs without WebViews; only the active one gets a WebView when it is shown. */
+    /** Recreates tabs without sessions; only the shown tab gets a session. */
     fun restoreSession(): Boolean {
         val text = JsonFiles.readText(sessionFile) ?: return false
         try {
@@ -583,10 +565,8 @@ class TabManager(
     }
 
     fun destroy() {
-        hideCustomView()
-        tabs.toList().forEach { destroyWebView(it) }
+        tabs.toList().forEach { closeSession(it) }
         tabs.clear()
-        if (privateSupported) deletePrivateProfile()
     }
 
     private companion object {

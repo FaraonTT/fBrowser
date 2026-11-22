@@ -10,13 +10,14 @@ import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import dev.fbrowser.app.engine.UaMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import java.io.IOException
 
-/** Search engines. Google is the default, as requested. */
+/** Search engines. Google is the default. */
 enum class SearchEngine(
     val id: String,
     val label: String,
@@ -43,14 +44,29 @@ data class BrowserSettings(
     val httpsFirst: Boolean = true,
     val stripTrackingParams: Boolean = true,
     val sendPrivacySignals: Boolean = true,
-    val safeBrowsing: Boolean = true,
     val javascript: Boolean = true,
     val darkWebPages: Boolean = true,
     val hideBarsOnScroll: Boolean = true,
     val clearOnExit: Boolean = false,
+    /** Default identity (User-Agent) sent to sites. */
+    val uaMode: UaMode = UaMode.FBROWSER,
     /** Hosts (without www.) where tracker blocking is switched off by the user. */
     val allowlist: Set<String> = emptySet(),
-)
+    /** Per-site identity overrides, stored as "host|modeId". */
+    val siteUa: Set<String> = emptySet(),
+) {
+    fun uaFor(siteKey: String): UaMode =
+        siteUa.firstOrNull { it.startsWith("$siteKey|") }
+            ?.substringAfter('|')
+            ?.let { UaMode.fromId(it) }
+            ?: uaMode
+
+    /** Sets (or, with null, removes) the identity override for one site. */
+    fun withSiteUa(siteKey: String, mode: UaMode?): BrowserSettings {
+        val rest = siteUa.filterNot { it.startsWith("$siteKey|") }.toSet()
+        return copy(siteUa = if (mode == null) rest else rest + "$siteKey|${mode.id}")
+    }
+}
 
 private val Context.settingsStore by preferencesDataStore(name = "fbrowser_settings")
 
@@ -64,12 +80,13 @@ class SettingsRepository(context: Context) {
         val httpsFirst = booleanPreferencesKey("https_first")
         val stripParams = booleanPreferencesKey("strip_params")
         val signals = booleanPreferencesKey("privacy_signals")
-        val safeBrowsing = booleanPreferencesKey("safe_browsing")
         val javascript = booleanPreferencesKey("javascript")
         val darkWeb = booleanPreferencesKey("dark_web")
         val hideBars = booleanPreferencesKey("hide_bars")
         val clearOnExit = booleanPreferencesKey("clear_on_exit")
+        val uaMode = stringPreferencesKey("ua_mode")
         val allowlist = stringSetPreferencesKey("allowlist")
+        val siteUa = stringSetPreferencesKey("site_ua")
     }
 
     val flow: Flow<BrowserSettings> = store.data
@@ -91,12 +108,13 @@ class SettingsRepository(context: Context) {
             httpsFirst = this[Keys.httpsFirst] ?: d.httpsFirst,
             stripTrackingParams = this[Keys.stripParams] ?: d.stripTrackingParams,
             sendPrivacySignals = this[Keys.signals] ?: d.sendPrivacySignals,
-            safeBrowsing = this[Keys.safeBrowsing] ?: d.safeBrowsing,
             javascript = this[Keys.javascript] ?: d.javascript,
             darkWebPages = this[Keys.darkWeb] ?: d.darkWebPages,
             hideBarsOnScroll = this[Keys.hideBars] ?: d.hideBarsOnScroll,
             clearOnExit = this[Keys.clearOnExit] ?: d.clearOnExit,
+            uaMode = UaMode.fromId(this[Keys.uaMode]),
             allowlist = this[Keys.allowlist] ?: d.allowlist,
+            siteUa = this[Keys.siteUa] ?: d.siteUa,
         )
     }
 
@@ -107,11 +125,12 @@ class SettingsRepository(context: Context) {
         this[Keys.httpsFirst] = s.httpsFirst
         this[Keys.stripParams] = s.stripTrackingParams
         this[Keys.signals] = s.sendPrivacySignals
-        this[Keys.safeBrowsing] = s.safeBrowsing
         this[Keys.javascript] = s.javascript
         this[Keys.darkWeb] = s.darkWebPages
         this[Keys.hideBars] = s.hideBarsOnScroll
         this[Keys.clearOnExit] = s.clearOnExit
+        this[Keys.uaMode] = s.uaMode.id
         this[Keys.allowlist] = s.allowlist
+        this[Keys.siteUa] = s.siteUa
     }
 }
