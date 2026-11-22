@@ -4,8 +4,6 @@ import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.webkit.ValueCallback
-import android.webkit.WebChromeClient
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -18,20 +16,36 @@ import dev.fbrowser.app.ui.theme.FBrowserTheme
 class MainActivity : ComponentActivity() {
 
     private val vm: BrowserViewModel by viewModels()
+    private var pendingFileResult: ((List<Uri>) -> Unit)? = null
 
-    private var fileCallback: ValueCallback<Array<Uri>>? = null
-    private val fileLauncher =
-        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
-            fileCallback?.onReceiveValue(
-                WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data),
-            )
-            fileCallback = null
+    private val singleFilePicker =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            pendingFileResult?.invoke(uri?.let(::listOf) ?: emptyList())
+            pendingFileResult = null
+        }
+
+    private val multipleFilePicker =
+        registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            pendingFileResult?.invoke(uris)
+            pendingFileResult = null
         }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        vm.manager.attach(this, ::launchFileChooser)
+
+        vm.manager.attach { multiple, onResult ->
+            pendingFileResult?.invoke(emptyList())
+            pendingFileResult = onResult
+            try {
+                if (multiple) multipleFilePicker.launch(arrayOf("*/*"))
+                else singleFilePicker.launch(arrayOf("*/*"))
+            } catch (_: Exception) {
+                pendingFileResult = null
+                onResult(emptyList())
+            }
+        }
+
         if (savedInstanceState == null) handleIntent(intent)
         setContent {
             FBrowserTheme {
@@ -46,53 +60,31 @@ class MainActivity : ComponentActivity() {
         handleIntent(intent)
     }
 
-    /** Links opened from other apps (fBrowser can be the default browser). Only http(s) is accepted. */
+    /** Accept only normal web links opened by other apps. */
     private fun handleIntent(intent: Intent?) {
         val uri = intent?.data ?: return
-        if (intent.action == Intent.ACTION_VIEW && (uri.scheme == "http" || uri.scheme == "https")) {
+        if (intent.action == Intent.ACTION_VIEW &&
+            (uri.scheme == "http" || uri.scheme == "https")
+        ) {
             vm.openExternal(uri.toString())
         }
     }
 
-    private fun launchFileChooser(
-        callback: ValueCallback<Array<Uri>>,
-        params: WebChromeClient.FileChooserParams,
-    ): Boolean {
-        fileCallback?.onReceiveValue(null) // a previous request is still pending: cancel it
-        fileCallback = callback
-        return try {
-            fileLauncher.launch(params.createIntent())
-            true
-        } catch (_: Exception) {
-            fileCallback = null
-            callback.onReceiveValue(null)
-            false
-        }
-    }
-
-    override fun onResume() {
-        super.onResume()
-        vm.manager.onHostResume()
-    }
-
-    override fun onPause() {
-        vm.manager.onHostPause()
-        super.onPause()
-    }
-
     override fun onStop() {
-        vm.onStop() // persist session + history
+        vm.onStop()
         super.onStop()
     }
 
     @Deprecated("Deprecated in Java")
     override fun onTrimMemory(level: Int) {
         super.onTrimMemory(level)
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) vm.manager.trimMemory()
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            vm.manager.trimMemory()
+        }
     }
 
     override fun onDestroy() {
-        vm.manager.detach(this)
+        vm.manager.detach()
         super.onDestroy()
     }
 }
