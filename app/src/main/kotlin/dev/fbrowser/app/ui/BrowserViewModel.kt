@@ -18,7 +18,7 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
-/** Survives configuration changes; owns settings, library and the tab/WebView manager. */
+/** Survives configuration changes; owns settings, library and the tab/GeckoView manager. */
 class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = SettingsRepository(app)
@@ -26,9 +26,9 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     val settings: StateFlow<BrowserSettings> = _settings.asStateFlow()
 
     val library = Library(app, viewModelScope)
-    val manager = TabManager(app, { _settings.value }, library, (app as FBrowserApp).blockList)
+    val manager = TabManager(app as FBrowserApp, { _settings.value }, library)
 
-    /** False until settings and library are loaded, so no WebView is configured with stale defaults. */
+    /** False until settings and library are loaded, so no Gecko session is created with stale defaults. */
     var ready by mutableStateOf(false)
         private set
 
@@ -43,7 +43,7 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
             pendingUrl?.let { manager.openUrl(it) }
             pendingUrl = null
             ready = true
-            // From now on, push every settings change into live WebViews.
+            // From now on, push every settings change into live Gecko sessions.
             repo.flow.drop(1).collect {
                 _settings.value = it
                 manager.applySettingsToAll()
