@@ -99,11 +99,6 @@ fun SettingsScreen(vm: BrowserViewModel, settings: BrowserSettings, onBack: () -
                 }
             }
             item {
-                SwitchRow(R.string.set_safe_browsing, R.string.set_safe_browsing_desc, settings.safeBrowsing) { v ->
-                    vm.update { it.copy(safeBrowsing = v) }
-                }
-            }
-            item {
                 SwitchRow(R.string.set_javascript, R.string.set_javascript_desc, settings.javascript) { v ->
                     vm.update { it.copy(javascript = v) }
                 }
