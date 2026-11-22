@@ -20,7 +20,6 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
@@ -44,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import dev.fbrowser.app.R
 import dev.fbrowser.app.data.BrowserSettings
 import dev.fbrowser.app.engine.Tab
+import dev.fbrowser.app.engine.UaMode
 import dev.fbrowser.app.engine.UrlUtils
 
 @Composable
@@ -95,12 +95,12 @@ fun MenuSheet(
                     manager.toast(context.getString(R.string.link_copied))
                     onDismiss()
                 }
-                MenuItem(Icons.Filled.Search, R.string.find_in_page) {
-                    onDismiss()
-                    manager.openFind()
-                }
-                SwitchItem(Icons.Filled.Info, R.string.desktop_site, tab.desktopSite) {
-                    manager.setDesktop(tab, it)
+                SwitchItem(Icons.Filled.Info, R.string.desktop_site, tab.uaMode.isDesktop) { enabled ->
+                    val fallback = settings.uaFor(siteKey)
+                    manager.setUaMode(
+                        tab,
+                        if (enabled) UaMode.CHROME_DESKTOP else if (fallback.isDesktop) UaMode.FBROWSER else fallback,
+                    )
                     onDismiss()
                 }
                 if (settings.blockTrackers && siteKey.isNotEmpty()) {
