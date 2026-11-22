@@ -1,13 +1,7 @@
-@file:OptIn(
-    ExperimentalMaterial3Api::class,
-    ExperimentalMaterial3ExpressiveApi::class,
-    ExperimentalLayoutApi::class,
-)
+@file:OptIn(ExperimentalMaterial3ExpressiveApi::class)
 
 package dev.fbrowser.app.ui
 
-import android.view.ViewGroup
-import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
@@ -20,7 +14,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -48,14 +41,11 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,7 +64,6 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -100,6 +89,7 @@ import dev.fbrowser.app.engine.ErrorKind
 import dev.fbrowser.app.engine.Tab
 import dev.fbrowser.app.engine.TabError
 import dev.fbrowser.app.engine.TabManager
+import org.mozilla.geckoview.GeckoView
 import dev.fbrowser.app.engine.UrlUtils
 
 @Composable
@@ -129,9 +119,8 @@ fun BrowserScreen(vm: BrowserViewModel, settings: BrowserSettings, navigate: (Sc
         manager.go(tab, text)
     }
 
-    BackHandler(enabled = manager.findOpen) { manager.closeFind() }
     BackHandler(enabled = editing) { stopEditing() }
-    BackHandler(enabled = !editing && !manager.findOpen && tab.canGoBack) { manager.goBack() }
+    BackHandler(enabled = !editing && tab.canGoBack) { manager.goBack() }
 
     Column(
         Modifier
@@ -152,7 +141,6 @@ fun BrowserScreen(vm: BrowserViewModel, settings: BrowserSettings, navigate: (Sc
                 key(tab.id) { WebContent(tab, manager) }
             }
             tab.error?.let { ErrorPane(it) { manager.reload() } }
-            if (manager.findOpen) FindBar(manager, Modifier.align(Alignment.TopCenter))
             if (editing) {
                 SuggestionsPane(
                     state = addressState,
@@ -195,28 +183,28 @@ fun BrowserScreen(vm: BrowserViewModel, settings: BrowserSettings, navigate: (Sc
 }
 
 /**
- * Hosts the tab's WebView inside a FrameLayout. The WebView outlives the composition (it belongs to
- * the tab), so on every attach it is first removed from any previous parent.
+ * Attaches the selected tab's GeckoSession to a GeckoView. A session belongs to its tab,
+ * not to the Compose tree, so it is detached from any old view before being attached here.
  */
 @Composable
 private fun WebContent(tab: Tab, manager: TabManager) {
-    AndroidView(
-        factory = { ctx -> FrameLayout(ctx) },
-        update = { container ->
-            @Suppress("UNUSED_VARIABLE") val version = tab.webViewVersion // re-run when the WebView was replaced
-            val wv = manager.webViewFor(tab)
-            if (container.childCount != 1 || container.getChildAt(0) !== wv) {
-                container.removeAllViews()
-                (wv.parent as? ViewGroup)?.removeView(wv)
-                container.addView(
-                    wv,
-                    ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT),
-                )
-            }
-        },
-        onRelease = { it.removeAllViews() },
-        modifier = Modifier.fillMaxSize(),
-    )
+    val sessionVersion = tab.sessionVersion
+    key(tab.id, sessionVersion) {
+        AndroidView(
+            factory = { context -> GeckoView(context) },
+            update = { geckoView ->
+                val session = manager.sessionFor(tab)
+                if (geckoView.session !== session) {
+                    (geckoView.parent as? android.view.ViewGroup)?.removeView(geckoView)
+                    geckoView.setSession(session)
+                }
+            },
+            onRelease = { geckoView ->
+                geckoView.releaseSession()
+            },
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
 }
 
 @Composable
@@ -422,58 +410,6 @@ private fun SuggestionsPane(
     }
 }
 
-@Composable
-private fun FindBar(manager: TabManager, modifier: Modifier = Modifier) {
-    val colors = MaterialTheme.colorScheme
-    val state = rememberTextFieldState()
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { focus.requestFocus() }
-    LaunchedEffect(state) { snapshotFlow { state.text.toString() }.collect { manager.find(it) } }
-    Surface(
-        modifier = modifier.padding(10.dp),
-        shape = MaterialTheme.shapes.extraLarge,
-        color = colors.surfaceContainerHigh,
-        shadowElevation = 6.dp,
-    ) {
-        Row(Modifier.padding(start = 18.dp), verticalAlignment = Alignment.CenterVertically) {
-            BasicTextField(
-                state = state,
-                modifier = Modifier.weight(1f).focusRequester(focus),
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = colors.onSurface),
-                cursorBrush = SolidColor(colors.primary),
-                lineLimits = TextFieldLineLimits.SingleLine,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                onKeyboardAction = { manager.findNext(true) },
-                decorator = TextFieldDecorator { inner ->
-                    Box(contentAlignment = Alignment.CenterStart) {
-                        if (state.text.isEmpty()) {
-                            Text(
-                                stringResource(R.string.find_hint),
-                                color = colors.onSurfaceVariant,
-                                style = MaterialTheme.typography.bodyLarge,
-                            )
-                        }
-                        inner()
-                    }
-                },
-            )
-            Text(
-                text = "${manager.findActive}/${manager.findTotal}",
-                style = MaterialTheme.typography.labelLarge,
-                color = colors.onSurfaceVariant,
-            )
-            IconButton(onClick = { manager.findNext(false) }) {
-                Icon(Icons.Filled.KeyboardArrowUp, null)
-            }
-            IconButton(onClick = { manager.findNext(true) }) {
-                Icon(Icons.Filled.KeyboardArrowDown, null)
-            }
-            IconButton(onClick = { manager.closeFind() }) {
-                Icon(Icons.Filled.Close, stringResource(R.string.close))
-            }
-        }
-    }
-}
 
 @Composable
 private fun ErrorPane(error: TabError, onRetry: () -> Unit) {
