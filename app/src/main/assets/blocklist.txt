@@ -11,7 +11,6 @@ google-analytics.com
 googletagmanager.com
 googletagservices.com
 adservice.google.com
-pagead2.googlesyndication.com
 2mdn.net
 admob.com
 
@@ -52,9 +51,7 @@ inspectlet.com
 heap.io
 heapanalytics.com
 kissmetrics.com
-newrelic.com
 nr-data.net
-sentry-cdn.com
 quantserve.com
 scorecardresearch.com
 chartbeat.net
@@ -95,7 +92,6 @@ sharethrough.com
 teads.tv
 media.net
 adcolony.com
-unityads.unity3d.com
 applovin.com
 vungle.com
 chartboost.com
@@ -118,7 +114,6 @@ id5-sync.com
 # --- Mobile attribution ---
 app-measurement.com
 appsflyer.com
-adjust.com
 kochava.com
 
 # --- RU / CIS trackers and ad networks ---
@@ -131,7 +126,6 @@ adfox.ru
 top-fwz1.mail.ru
 top.mail.ru
 ad.mail.ru
-ounter.yadro.ru
 counter.yadro.ru
 tns-counter.ru
 adriver.ru
