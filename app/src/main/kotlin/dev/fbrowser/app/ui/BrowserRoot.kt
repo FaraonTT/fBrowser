@@ -23,11 +23,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.viewinterop.AndroidView
-import androidx.compose.ui.zIndex
-import android.widget.FrameLayout
-import android.graphics.Color as AndroidColor
-import android.view.ViewGroup
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -57,10 +52,10 @@ fun BrowserRoot(vm: BrowserViewModel) {
     }
 
     // Fullscreen video hides the system bars.
-    val fullscreen = manager.fullscreenView
-    DisposableEffect(fullscreen != null, window) {
+    val fullscreen = manager.fullscreen
+    DisposableEffect(fullscreen, window) {
         val controller = window?.let { WindowCompat.getInsetsController(it, view) }
-        if (fullscreen != null) {
+        if (fullscreen) {
             controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             controller?.hide(WindowInsetsCompat.Type.systemBars())
         }
@@ -101,19 +96,8 @@ fun BrowserRoot(vm: BrowserViewModel) {
             }
         }
 
-        fullscreen?.let { video ->
-            AndroidView(
-                factory = { ctx ->
-                    FrameLayout(ctx).apply {
-                        setBackgroundColor(AndroidColor.BLACK)
-                        (video.parent as? ViewGroup)?.removeView(video)
-                        addView(video, ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-                    }
-                },
-                onRelease = { it.removeAllViews() },
-                modifier = Modifier.fillMaxSize().zIndex(10f),
-            )
-            BackHandler { manager.hideCustomView() }
+        BackHandler(enabled = fullscreen) {
+            manager.exitFullscreen()
         }
     }
 }
